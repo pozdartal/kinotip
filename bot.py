@@ -56,7 +56,7 @@ posts_cache: List[PostItem] = []
 cache_timestamp: float = 0.0
 CACHE_TTL_SECONDS = 60 * 5  # 5 минут
 feed_process: Optional[Process] = None
-FEED_STARTUP_TIMEOUT = 20
+FEED_STARTUP_TIMEOUT = 60  # Увеличено до 60 секунд для сервера
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -246,11 +246,17 @@ def stop_feed_process() -> None:
 def start_feed_process_if_needed() -> None:
     """Запускает фид в отдельном процессе, если он указан и локальный."""
     global feed_process
-    if not POSTS_FEED_URL or feed_process:
+    if not POSTS_FEED_URL:
+        logger.info("POSTS_FEED_URL не указан, парсер не запускается")
+        return
+    
+    if feed_process:
+        logger.info("Парсер уже запущен")
         return
 
     parsed = urlparse(POSTS_FEED_URL)
     if parsed.scheme != "http":
+        logger.info("POSTS_FEED_URL не http, парсер не запускается: %s", parsed.scheme)
         return
 
     host = parsed.hostname or "127.0.0.1"
@@ -258,29 +264,54 @@ def start_feed_process_if_needed() -> None:
     path = parsed.path or ""
 
     if host not in {"127.0.0.1", "localhost"}:
+        logger.info("POSTS_FEED_URL указывает на внешний хост %s, парсер не запускается", host)
         return
+    
     if path.rstrip("/") != "/feed":
+        logger.info("POSTS_FEED_URL путь не /feed: %s, парсер не запускается", path)
         return
 
     try:
         from app import run_feed_server
+        logger.info("Импорт парсера успешен")
     except ImportError as error:
         logger.warning("Не удалось импортировать встроенный парсер: %s", error)
         return
 
-    logger.info("Запускаем локальный парсер по адресу %s", POSTS_FEED_URL)
-    feed_process = Process(
-        target=run_feed_server,
-        kwargs={"host": host, "port": port},
-        daemon=True,
-    )
-    feed_process.start()
+    logger.info("Запускаем локальный парсер по адресу %s (host=%s, port=%d)", POSTS_FEED_URL, host, port)
+    try:
+        feed_process = Process(
+            target=run_feed_server,
+            kwargs={"host": host, "port": port},
+            daemon=True,
+        )
+        feed_process.start()
+        logger.info("Процесс парсера запущен, PID: %d", feed_process.pid)
+    except Exception as error:
+        logger.error("Ошибка при запуске процесса парсера: %s", error)
+        return
 
+    # Даём процессу немного времени на старт
+    import time as time_module
+    time_module.sleep(2)
+    
+    # Проверяем, что процесс жив
+    if not feed_process.is_alive():
+        logger.error("Процесс парсера завершился сразу после запуска!")
+        feed_process = None
+        return
+    
+    logger.info("Ожидаем готовности парсера (таймаут %d сек)...", FEED_STARTUP_TIMEOUT)
     if not wait_for_feed_ready(POSTS_FEED_URL):
         logger.warning(
-            "Парсер по адресу %s не отвечает. Бот продолжит работу без автозагрузки.",
-            POSTS_FEED_URL,
+            "Парсер по адресу %s не отвечает в течение %d секунд. Бот продолжит работу без автозагрузки.",
+            POSTS_FEED_URL, FEED_STARTUP_TIMEOUT
         )
+        # Проверяем статус процесса
+        if feed_process and not feed_process.is_alive():
+            logger.error("Процесс парсера завершился. Код возврата: %s", feed_process.exitcode)
+    else:
+        logger.info("Парсер готов и отвечает на %s", POSTS_FEED_URL)
 
 
 atexit.register(stop_feed_process)
@@ -414,11 +445,16 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик inline-запросов"""
     inline = update.inline_query
     if inline is None:
+        logger.warning("Inline query is None")
         return
 
     query = (inline.query or '').strip().lower()
+    logger.info("Получен inline-запрос: '%s'", query)
 
-    await ensure_posts_loaded()
+    try:
+        await ensure_posts_loaded()
+    except Exception as error:
+        logger.error("Ошибка при загрузке постов: %s", error)
 
     # Фильтруем посты по запросу (если есть)
     posts: List[PostItem] = list(posts_cache)
@@ -479,7 +515,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             final_content = f"{emoji} {final_content}".strip()
         
-        results.append(
+        results = [
             InlineQueryResultArticle(
                 id=f"post_{random_post.message_id}",
                 title=title,
@@ -489,9 +525,14 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode='HTML'
                 )
             )
-        )
+        ]
+        logger.info("Сформирован результат для inline-запроса: %d элементов", len(results))
 
-    await inline.answer(results, cache_time=1, is_personal=True)
+    try:
+        await inline.answer(results, cache_time=1, is_personal=True)
+        logger.info("Ответ на inline-запрос отправлен успешно")
+    except Exception as error:
+        logger.error("Ошибка при отправке ответа на inline-запрос: %s", error)
 
 
 def main():

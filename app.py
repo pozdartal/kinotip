@@ -75,9 +75,22 @@ def create_client() -> TelegramClient:
     """Создаёт и авторизует Telethon-клиент."""
     # Идентификатор сессии можно назвать как угодно — используем имя канала
     client = TelegramClient("kinotip_parser", API_ID_INT, API_HASH_VALUE)
-
-    # start() внутри себя синхронно запускает авторизацию и запрос кода
-    client.start(phone=PHONE_VALUE)
+    
+    # Пытаемся авторизоваться (использует существующую сессию или запросит код)
+    try:
+        client.start(phone=PHONE_VALUE)
+    except EOFError:
+        # Нет интерактивного ввода - используем существующую сессию
+        logger.info("Нет интерактивного ввода, используем существующую сессию")
+        client.loop.run_until_complete(client.connect())
+    except Exception as error:
+        logger.warning("Ошибка при авторизации: %s", error)
+        # Пытаемся подключиться к существующей сессии
+        try:
+            client.loop.run_until_complete(client.connect())
+        except Exception:
+            pass
+    
     return client
 
 
@@ -86,10 +99,17 @@ def ensure_session() -> None:
     client: Optional[TelegramClient] = None
     try:
         client = create_client()
+        # Проверяем, авторизован ли клиент
+        if client.loop.run_until_complete(client.is_user_authorized()):
+            logger.info("Telethon сессия авторизована успешно")
+        else:
+            logger.warning("Telethon сессия не авторизована")
+    except Exception as error:
+        logger.warning("Ошибка при проверке сессии: %s", error)
     finally:
         if client:
             try:
-                client.disconnect()
+                client.loop.run_until_complete(client.disconnect())
             except Exception:
                 pass
 
@@ -176,11 +196,19 @@ def fetch_posts(limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
     posts: List[Dict[str, Any]] = []
     try:
         client = create_client()
+        
+        # Проверяем авторизацию
+        if not client.loop.run_until_complete(client.is_user_authorized()):
+            logger.error("Telethon сессия не авторизована. Невозможно получить посты.")
+            return None
     except RPCError as error:
         logger.error("Ошибка при подключении к Telegram: %s", error)
         return None
     except Exception as error:
         logger.error("Непредвиденная ошибка при подключении к Telegram: %s", error)
+        return None
+
+    if client is None:
         return None
 
     try:
@@ -202,7 +230,7 @@ def fetch_posts(limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
     finally:
         try:
             if client:
-                client.disconnect()
+                client.loop.run_until_complete(client.disconnect())
         except Exception:
             pass
 
@@ -282,6 +310,9 @@ def index():
 
 def run_feed_server(host: str = "127.0.0.1", port: int = 5000) -> None:
     """Запускает HTTP-сервер с фидом."""
+    # Проверяем сессию перед запуском
+    ensure_session()
+    # Наполняем кэш
     warm_up_cache()
     schedule_cache_updates()
     app.run(host=host, port=port)
