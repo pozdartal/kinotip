@@ -73,25 +73,47 @@ cached_posts: List[Dict[str, Any]] = []
 
 def create_client() -> TelegramClient:
     """Создаёт и авторизует Telethon-клиент."""
-    # Идентификатор сессии можно назвать как угодно — используем имя канала
-    client = TelegramClient("kinotip_parser", API_ID_INT, API_HASH_VALUE)
+    import os
+    session_name = "kinotip_parser"
+    session_file = f"{session_name}.session"
     
-    # Пытаемся авторизоваться (использует существующую сессию или запросит код)
+    # ПРОВЕРЯЕМ: есть ли файл сессии?
+    has_session = os.path.exists(session_file)
+    
+    client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE)
+    
+    # Создаём event loop
+    import asyncio
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # Подключаемся
+    loop.run_until_complete(client.connect())
+    
+    # Если файл сессии ЕСТЬ - проверяем авторизацию
+    if has_session:
+        logger.info("Файл сессии найден: %s", session_file)
+        if loop.run_until_complete(client.is_user_authorized()):
+            logger.info("✅ Сессия авторизована")
+            return client
+        else:
+            logger.error("❌ Файл сессии есть, но авторизация не прошла!")
+            logger.error("Удалите файл %s и создайте новый", session_file)
+            raise SystemExit("Сессия не авторизована")
+    
+    # Если файла НЕТ - пытаемся авторизоваться
+    logger.info("Файл сессии НЕ найден, требуется авторизация")
     try:
         client.start(phone=PHONE_VALUE)
+        logger.info("✅ Авторизация успешна, файл сессии создан")
+        return client
     except EOFError:
-        # Нет интерактивного ввода - используем существующую сессию
-        logger.info("Нет интерактивного ввода, используем существующую сессию")
-        client.loop.run_until_complete(client.connect())
-    except Exception as error:
-        logger.warning("Ошибка при авторизации: %s", error)
-        # Пытаемся подключиться к существующей сессии
-        try:
-            client.loop.run_until_complete(client.connect())
-        except Exception:
-            pass
-    
-    return client
+        logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
+        logger.error("Запустите 'python app.py' локально один раз для создания файла сессии")
+        raise SystemExit("Нет файла сессии и нет способа авторизоваться")
 
 
 def ensure_session() -> None:
