@@ -338,7 +338,7 @@ def run_feed_server(host: str = "127.0.0.1", port: int = 5000) -> None:
     warm_up_cache()
     schedule_cache_updates()
     
-    # Запускаем Flask в отдельном потоке, чтобы можно было запустить бота
+    # Запускаем Flask в отдельном потоке
     import threading
     flask_thread = threading.Thread(
         target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False),
@@ -347,18 +347,37 @@ def run_feed_server(host: str = "127.0.0.1", port: int = 5000) -> None:
     flask_thread.start()
     logger.info("Flask сервер запущен в фоновом потоке")
     
-    # Пытаемся запустить бота, если он не запущен
+    # Запускаем бота в отдельном процессе
     try:
-        import bot
-        logger.info("Импорт bot.py успешен, запускаем бота...")
-        bot.main()
-    except ImportError as e:
-        logger.warning("Не удалось импортировать bot.py: %s", e)
+        import subprocess
+        import sys
+        logger.info("Запускаем бота в отдельном процессе...")
+        bot_process = subprocess.Popen(
+            [sys.executable, "bot.py"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        logger.info("Бот запущен, PID: %d", bot_process.pid)
+        
+        # Ждём, пока процессы работают
+        try:
+            while True:
+                time.sleep(1)
+                # Проверяем, что бот ещё работает
+                if bot_process.poll() is not None:
+                    logger.warning("Процесс бота завершился с кодом: %s", bot_process.returncode)
+                    break
+        except KeyboardInterrupt:
+            logger.info("Остановка...")
+            bot_process.terminate()
+            bot_process.wait()
+    except Exception as e:
+        logger.error("Ошибка при запуске бота: %s", e)
         logger.info("Парсер будет работать без бота")
         # Если бот не запустился, просто ждём
         try:
             while True:
-                import time
                 time.sleep(1)
         except KeyboardInterrupt:
             logger.info("Остановка сервера...")
