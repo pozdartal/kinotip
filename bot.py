@@ -550,26 +550,47 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Главная функция запуска бота"""
+    logger.info("=" * 50)
+    logger.info("Запуск бота...")
+    logger.info("=" * 50)
+    
     if not BOT_TOKEN:
         logger.error("BOT_TOKEN не найден! Создайте файл .env с BOT_TOKEN=ваш_токен")
         return
     
+    logger.info("BOT_TOKEN найден (длина: %d символов)", len(BOT_TOKEN))
+    
     # Создаем приложение
-    application = Application.builder().token(BOT_TOKEN).build()
+    try:
+        application = Application.builder().token(BOT_TOKEN).build()
+        logger.info("Приложение создано успешно")
+    except Exception as e:
+        logger.error("Ошибка при создании приложения: %s", e)
+        return
     
     # Регистрируем обработчики
+    logger.info("Регистрация обработчиков...")
     application.add_handler(CommandHandler("start", start))
+    logger.info("  - /start зарегистрирован")
     application.add_handler(CommandHandler("help", help_command))
+    logger.info("  - /help зарегистрирован")
     application.add_handler(CommandHandler("stats", stats_command))
+    logger.info("  - /stats зарегистрирован")
     application.add_handler(CommandHandler("test_feed", test_feed_command))
+    logger.info("  - /test_feed зарегистрирован")
     application.add_handler(CommandHandler("add_post", add_post))
+    logger.info("  - /add_post зарегистрирован")
     application.add_handler(InlineQueryHandler(inline_query))
+    logger.info("  - inline_query зарегистрирован")
+    logger.info("Все обработчики зарегистрированы")
     
     # Запускаем парсер, если нужно
     start_feed_process_if_needed()
     
     # Запускаем бота
-    logger.info("Бот запущен!")
+    logger.info("=" * 50)
+    logger.info("Бот запущен и готов к работе!")
+    logger.info("=" * 50)
     if POSTS_FEED_URL:
         logger.info("Попытка загрузить посты из %s", POSTS_FEED_URL)
         # Ждём немного, чтобы парсер успел запуститься
@@ -583,7 +604,12 @@ def main():
     else:
         logger.warning("POSTS_FEED_URL не указан, бот будет работать только с ручными постами")
     
-    application.run_polling()
+    try:
+        logger.info("Запуск polling...")
+        application.run_polling()
+    except Exception as e:
+        logger.error("КРИТИЧЕСКАЯ ОШИБКА при запуске polling: %s", e, exc_info=True)
+        raise
 
 
 if __name__ == '__main__':
