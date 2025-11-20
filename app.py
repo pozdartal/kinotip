@@ -337,7 +337,31 @@ def run_feed_server(host: str = "127.0.0.1", port: int = 5000) -> None:
     # Наполняем кэш
     warm_up_cache()
     schedule_cache_updates()
-    app.run(host=host, port=port)
+    
+    # Запускаем Flask в отдельном потоке, чтобы можно было запустить бота
+    import threading
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host=host, port=port, debug=False, use_reloader=False),
+        daemon=True
+    )
+    flask_thread.start()
+    logger.info("Flask сервер запущен в фоновом потоке")
+    
+    # Пытаемся запустить бота, если он не запущен
+    try:
+        import bot
+        logger.info("Импорт bot.py успешен, запускаем бота...")
+        bot.main()
+    except ImportError as e:
+        logger.warning("Не удалось импортировать bot.py: %s", e)
+        logger.info("Парсер будет работать без бота")
+        # Если бот не запустился, просто ждём
+        try:
+            while True:
+                import time
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Остановка сервера...")
 
 
 if __name__ == "__main__":
