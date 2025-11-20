@@ -106,11 +106,22 @@ async def _collect_posts(client: TelegramClient, limit: Optional[int]) -> List[D
         if not msg:
             continue
 
+        # Получаем текст сообщения
         text_raw: Any = getattr(msg, "message", None) or getattr(msg, "raw_text", "")
         text = str(text_raw or "").strip()
+        
+        # Если текста нет, проверяем подпись к медиа
+        if not text:
+            try:
+                text = str(getattr(msg, "raw_text", "") or "")
+            except:
+                pass
+        
+        # Пропускаем, если вообще нет текста
         if not text:
             continue
-
+        
+        # Проверяем хештег
         if "#showtitrvibe" not in text.lower():
             continue
 
@@ -123,18 +134,39 @@ async def _collect_posts(client: TelegramClient, limit: Optional[int]) -> List[D
         if not link and channel_slug and getattr(msg, "id", None):
             link = f"https://t.me/{channel_slug}/{getattr(msg, 'id')}"
 
+        # Определяем тип медиа
+        post_type = "text"
+        
+        # Проверяем фото
+        if hasattr(msg, "photo") and msg.photo:
+            post_type = "photo"
+        # Проверяем документ
+        elif hasattr(msg, "document") and msg.document:
+            post_type = "document"
+        # Проверяем видео
+        elif hasattr(msg, "video") and msg.video:
+            post_type = "video"
+        # Проверяем стикер
+        elif hasattr(msg, "sticker") and msg.sticker:
+            post_type = "sticker"
+
+        # Используем текст (уже получен выше)
+        display_text = text
+
         payload: Dict[str, Any] = {
             "id": str(getattr(msg, "id", "")),
             "message_id": int(getattr(msg, "id", 0)),
-            "text": text,
-            "caption": text,
-            "type": "text",
-            "content": text,
+            "text": display_text,
+            "caption": display_text,
+            "type": post_type,
+            "content": display_text,
         }
         if link:
             payload["link"] = link
 
         results.append(payload)
+    
+    logger.info("Собрано %d постов с #showtitrvibe из канала", len(results))
     return results
 
 

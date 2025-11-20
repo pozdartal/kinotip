@@ -39,3 +39,12 @@ wheels/
 .DS_Store
 Thumbs.db
 
+# Telethon session files
+*.session
+*.session-journal
+
+# Old/unused scripts
+import requests.py
+kinotip_bot.py
+parcer.py
+
