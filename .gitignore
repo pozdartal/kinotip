@@ -39,9 +39,9 @@ wheels/
 .DS_Store
 Thumbs.db
 
-# Telethon session files
-*.session
+# Telethon session files (исключаем kinotip_parser.session для деплоя)
 *.session-journal
+# kinotip_parser.session - добавляем в Git для удобства деплоя
 
 # Old/unused scripts
 import requests.py
