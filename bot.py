@@ -61,8 +61,10 @@ FEED_STARTUP_TIMEOUT = 60  # Увеличено до 60 секунд для се
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команды /start"""
+    logger.info("Получена команда /start")
     message = update.effective_message
     if message is None:
+        logger.warning("message is None в start")
         return
 
     welcome_message = (
@@ -70,8 +72,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Просто начни вводить мой username в любом чате и выбери фильм из списка.\n"
         "Я буду показывать случайные посты из канала шоу 'Титр', "
         "отмеченные хештегом #showtitrvibe.\n\n"
-        "Использование: @ваш_username_бота в любом чате"
+        "Использование: @ваш_username_бота в любом чате\n\n"
+        "Команды: /help, /stats, /test_feed"
     )
+    logger.info("Отправляем приветственное сообщение")
     await message.reply_text(welcome_message)
 
 
@@ -100,15 +104,20 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def test_feed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Тестовая команда для проверки фида"""
+    logger.info("Получена команда /test_feed")
     message = update.effective_message
     if message is None:
+        logger.warning("message is None в test_feed_command")
         return
+    
+    logger.info("Отвечаем на команду /test_feed")
     
     if not POSTS_FEED_URL:
         await message.reply_text("❌ POSTS_FEED_URL не указан в .env")
         return
     
     try:
+        logger.info("Проверяем фид: %s", POSTS_FEED_URL)
         response = requests.get(POSTS_FEED_URL, timeout=5)
         response.raise_for_status()
         payload = response.json()
@@ -119,14 +128,18 @@ async def test_feed_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif isinstance(payload, list):
             items = payload
         
-        await message.reply_text(
+        result_text = (
             f"✅ Фид доступен\n"
             f"📊 Всего элементов: {len(items)}\n"
             f"📝 С #showtitrvibe: {sum(1 for item in items if '#showtitrvibe' in str(item.get('text', '') + ' ' + str(item.get('caption', ''))).lower())}\n"
             f"💾 В кэше бота: {len(posts_cache)}"
         )
+        logger.info("Отправляем результат: %s", result_text)
+        await message.reply_text(result_text)
     except Exception as e:
-        await message.reply_text(f"❌ Ошибка при проверке фида: {e}")
+        error_msg = f"❌ Ошибка при проверке фида: {e}"
+        logger.error("Ошибка в test_feed_command: %s", e, exc_info=True)
+        await message.reply_text(error_msg)
 
 
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -559,8 +572,14 @@ def main():
     logger.info("Бот запущен!")
     if POSTS_FEED_URL:
         logger.info("Попытка загрузить посты из %s", POSTS_FEED_URL)
+        # Ждём немного, чтобы парсер успел запуститься
+        import time
+        time.sleep(3)
         fetch_posts_from_feed(force=True)
         logger.info("Текущий размер кэша: %d постов", len(posts_cache))
+        if len(posts_cache) == 0:
+            logger.warning("⚠️ Кэш пуст! Проверьте, что парсер запущен и доступен на %s", POSTS_FEED_URL)
+            logger.warning("Попробуйте команду /test_feed в боте для диагностики")
     else:
         logger.warning("POSTS_FEED_URL не указан, бот будет работать только с ручными постами")
     
