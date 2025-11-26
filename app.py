@@ -74,6 +74,7 @@ cached_posts: List[Dict[str, Any]] = []
 def create_client() -> TelegramClient:
     """Создаёт и авторизует Telethon-клиент."""
     import os
+    import asyncio
     session_name = "kinotip_parser"
     session_file = f"{session_name}.session"
     
@@ -82,10 +83,12 @@ def create_client() -> TelegramClient:
     
     client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE)
     
-    # Создаём event loop
-    import asyncio
+    # Создаём event loop для текущего потока
+    # В новом потоке может не быть event loop, поэтому создаём новый
     try:
         loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Event loop is closed")
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -286,6 +289,12 @@ def schedule_cache_updates() -> None:
     """Запускает фоновой поток, обновляющий кэш дважды в сутки."""
 
     def worker() -> None:
+        import asyncio
+        # Создаём event loop для этого потока
+        # Это необходимо, так как Telethon требует asyncio event loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         while True:
             now = datetime.now()
             next_runs: List[datetime] = []
