@@ -83,11 +83,11 @@ def create_client() -> Optional[TelegramClient]:
     
     # Создаём event loop для текущего потока
     # В новом потоке может не быть event loop, поэтому создаём новый
+    # В Python 3.10+ get_event_loop() устарел, используем get_running_loop() или new_event_loop()
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_closed():
-            raise RuntimeError("Event loop is closed")
+        loop = asyncio.get_running_loop()
     except RuntimeError:
+        # Нет запущенного loop, создаём новый
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
