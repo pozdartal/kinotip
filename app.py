@@ -107,27 +107,14 @@ def create_client() -> Optional[TelegramClient]:
                 return client
             else:
                 logger.warning("⚠️ Файл сессии есть, но авторизация не прошла!")
-                logger.warning("Возможно, сессия истекла. Попытка переподключения...")
-                # Пытаемся переподключиться
+                logger.warning("Возможно, сессия истекла или повреждена.")
+                # Отключаемся и возвращаем None
                 try:
                     loop.run_until_complete(client.disconnect())
-                    # Удаляем повреждённую сессию и пробуем создать новую
-                    logger.warning("Удаляем повреждённую сессию и пробуем переавторизоваться...")
-                    os.remove(session_file)
-                    # Создаём новый клиент
-                    client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE, loop=loop)
-                    loop.run_until_complete(client.connect())
-                    # Пробуем авторизоваться (но без интерактивного ввода это не сработает)
-                    logger.error("❌ Требуется переавторизация. Удалите файл %s вручную и перезапустите приложение", session_file)
-                    loop.run_until_complete(client.disconnect())
-                    return None
-                except Exception as e:
-                    logger.error("Ошибка при попытке переподключения: %s", e)
-                    try:
-                        loop.run_until_complete(client.disconnect())
-                    except:
-                        pass
-                    return None
+                except Exception:
+                    pass  # Игнорируем ошибки отключения
+                logger.error("❌ Требуется переавторизация. Удалите файл %s и создайте новую сессию", session_file)
+                return None
         
         # Если файла НЕТ - пытаемся авторизоваться
         logger.info("Файл сессии НЕ найден, требуется авторизация")
