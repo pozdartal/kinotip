@@ -71,8 +71,8 @@ app = Flask(__name__)
 cached_posts: List[Dict[str, Any]] = []
 
 
-def create_client() -> TelegramClient:
-    """Создаёт и авторизует Telethon-клиент."""
+def create_client() -> Optional[TelegramClient]:
+    """Создаёт и авторизует Telethon-клиент. Возвращает None при ошибке авторизации."""
     import os
     import asyncio
     session_name = "kinotip_parser"
@@ -80,8 +80,6 @@ def create_client() -> TelegramClient:
     
     # ПРОВЕРЯЕМ: есть ли файл сессии?
     has_session = os.path.exists(session_file)
-    
-    client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE)
     
     # Создаём event loop для текущего потока
     # В новом потоке может не быть event loop, поэтому создаём новый
@@ -93,30 +91,66 @@ def create_client() -> TelegramClient:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     
-    # Подключаемся
-    loop.run_until_complete(client.connect())
+    # Создаём клиент с явным указанием loop
+    client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE, loop=loop)
     
-    # Если файл сессии ЕСТЬ - проверяем авторизацию
-    if has_session:
-        logger.info("Файл сессии найден: %s", session_file)
-        if loop.run_until_complete(client.is_user_authorized()):
-            logger.info("✅ Сессия авторизована")
-            return client
-        else:
-            logger.error("❌ Файл сессии есть, но авторизация не прошла!")
-            logger.error("Удалите файл %s и создайте новый", session_file)
-            raise SystemExit("Сессия не авторизована")
-    
-    # Если файла НЕТ - пытаемся авторизоваться
-    logger.info("Файл сессии НЕ найден, требуется авторизация")
     try:
-        client.start(phone=PHONE_VALUE)
-        logger.info("✅ Авторизация успешна, файл сессии создан")
-        return client
-    except EOFError:
-        logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
-        logger.error("Запустите 'python app.py' локально один раз для создания файла сессии")
-        raise SystemExit("Нет файла сессии и нет способа авторизоваться")
+        # Подключаемся
+        loop.run_until_complete(client.connect())
+        
+        # Если файл сессии ЕСТЬ - проверяем авторизацию
+        if has_session:
+            logger.info("Файл сессии найден: %s", session_file)
+            is_authorized = loop.run_until_complete(client.is_user_authorized())
+            if is_authorized:
+                logger.info("✅ Сессия авторизована")
+                return client
+            else:
+                logger.warning("⚠️ Файл сессии есть, но авторизация не прошла!")
+                logger.warning("Возможно, сессия истекла. Попытка переподключения...")
+                # Пытаемся переподключиться
+                try:
+                    loop.run_until_complete(client.disconnect())
+                    # Удаляем повреждённую сессию и пробуем создать новую
+                    logger.warning("Удаляем повреждённую сессию и пробуем переавторизоваться...")
+                    os.remove(session_file)
+                    # Создаём новый клиент
+                    client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE, loop=loop)
+                    loop.run_until_complete(client.connect())
+                    # Пробуем авторизоваться (но без интерактивного ввода это не сработает)
+                    logger.error("❌ Требуется переавторизация. Удалите файл %s вручную и перезапустите приложение", session_file)
+                    loop.run_until_complete(client.disconnect())
+                    return None
+                except Exception as e:
+                    logger.error("Ошибка при попытке переподключения: %s", e)
+                    try:
+                        loop.run_until_complete(client.disconnect())
+                    except:
+                        pass
+                    return None
+        
+        # Если файла НЕТ - пытаемся авторизоваться
+        logger.info("Файл сессии НЕ найден, требуется авторизация")
+        try:
+            client.start(phone=PHONE_VALUE)
+            logger.info("✅ Авторизация успешна, файл сессии создан")
+            return client
+        except EOFError:
+            logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
+            logger.error("Запустите 'python app.py' локально один раз для создания файла сессии")
+            try:
+                loop.run_until_complete(client.disconnect())
+            except:
+                pass
+            return None
+    except Exception as e:
+        logger.error("Ошибка при создании клиента: %s", e)
+        try:
+            if client:
+                loop.run_until_complete(client.disconnect())
+        except:
+            pass
+        return None
 
 
 def ensure_session() -> None:
@@ -124,6 +158,9 @@ def ensure_session() -> None:
     client: Optional[TelegramClient] = None
     try:
         client = create_client()
+        if client is None:
+            logger.error("Не удалось создать клиент. Проверьте сессию.")
+            return
         # Проверяем, авторизован ли клиент
         if client.loop.run_until_complete(client.is_user_authorized()):
             logger.info("Telethon сессия авторизована успешно")
@@ -222,7 +259,12 @@ def fetch_posts(limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
     try:
         client = create_client()
         
-        # Проверяем авторизацию
+        # Если клиент не создан (ошибка авторизации), возвращаем None
+        if client is None:
+            logger.error("Не удалось создать клиент. Невозможно получить посты.")
+            return None
+        
+        # Проверяем авторизацию ещё раз (на всякий случай)
         if not client.loop.run_until_complete(client.is_user_authorized()):
             logger.error("Telethon сессия не авторизована. Невозможно получить посты.")
             return None
