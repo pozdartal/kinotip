@@ -386,32 +386,97 @@ def run_feed_server(host: str = "127.0.0.1", port: int = 5000) -> None:
     logger.info("Flask сервер запущен в фоновом потоке")
     
     # Запускаем бота в отдельном процессе
+    import subprocess
+    import sys
+    import threading
+    
+    def read_bot_output(pipe, prefix):
+        """Читает вывод из процесса бота и логирует его"""
+        try:
+            for line in iter(pipe.readline, ''):
+                if line:
+                    logger.info("[BOT] %s", line.rstrip())
+        except Exception as e:
+            logger.error("Ошибка при чтении вывода бота: %s", e)
+        finally:
+            pipe.close()
+    
+    bot_process = None
+    restart_count = 0
+    max_restarts = 10
+    
     try:
-        import subprocess
-        import sys
-        logger.info("Запускаем бота в отдельном процессе...")
-        bot_process = subprocess.Popen(
-            [sys.executable, "bot.py"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        logger.info("Бот запущен, PID: %d", bot_process.pid)
+        while restart_count < max_restarts:
+            try:
+                logger.info("Запускаем бота в отдельном процессе... (попытка %d/%d)", restart_count + 1, max_restarts)
+                bot_process = subprocess.Popen(
+                    [sys.executable, "bot.py"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,  # Объединяем stderr в stdout
+                    text=True,
+                    bufsize=1  # Строковая буферизация
+                )
+                logger.info("Бот запущен, PID: %d", bot_process.pid)
+                
+                # Запускаем поток для чтения логов
+                output_thread = threading.Thread(
+                    target=read_bot_output,
+                    args=(bot_process.stdout, "BOT"),
+                    daemon=True
+                )
+                output_thread.start()
+                
+                # Ждём, пока процессы работают
+                try:
+                    while True:
+                        time.sleep(1)
+                        # Проверяем, что бот ещё работает
+                        if bot_process.poll() is not None:
+                            exit_code = bot_process.returncode
+                            logger.warning("Процесс бота завершился с кодом: %s", exit_code)
+                            
+                            # Если это не нормальное завершение (0) и не SIGKILL (-9), ждём немного перед перезапуском
+                            if exit_code != 0:
+                                if exit_code == -9:
+                                    logger.warning("Бот был принудительно завершён (SIGKILL). Возможно, нехватка памяти.")
+                                else:
+                                    logger.warning("Бот завершился с ошибкой. Перезапускаем...")
+                                
+                                restart_count += 1
+                                if restart_count < max_restarts:
+                                    logger.info("Перезапуск через 5 секунд...")
+                                    time.sleep(5)
+                                    break  # Выходим из внутреннего цикла, чтобы перезапустить
+                                else:
+                                    logger.error("Достигнут лимит перезапусков (%d). Останавливаем попытки.", max_restarts)
+                                    return
+                            else:
+                                logger.info("Бот завершился нормально")
+                                return
+                except KeyboardInterrupt:
+                    logger.info("Остановка...")
+                    if bot_process:
+                        bot_process.terminate()
+                        bot_process.wait()
+                    return
+            except Exception as e:
+                logger.error("Ошибка при запуске бота: %s", e)
+                restart_count += 1
+                if restart_count < max_restarts:
+                    logger.info("Перезапуск через 5 секунд...")
+                    time.sleep(5)
+                else:
+                    logger.error("Достигнут лимит перезапусков. Парсер будет работать без бота")
+                    break
         
-        # Ждём, пока процессы работают
+        # Если бот не запустился, просто ждём
         try:
             while True:
                 time.sleep(1)
-                # Проверяем, что бот ещё работает
-                if bot_process.poll() is not None:
-                    logger.warning("Процесс бота завершился с кодом: %s", bot_process.returncode)
-                    break
         except KeyboardInterrupt:
-            logger.info("Остановка...")
-            bot_process.terminate()
-            bot_process.wait()
+            logger.info("Остановка сервера...")
     except Exception as e:
-        logger.error("Ошибка при запуске бота: %s", e)
+        logger.error("Критическая ошибка при работе с ботом: %s", e)
         logger.info("Парсер будет работать без бота")
         # Если бот не запустился, просто ждём
         try:
