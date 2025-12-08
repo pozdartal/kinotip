@@ -175,6 +175,8 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
                         try:
                             if client.is_connected():
                                 loop.run_until_complete(client.disconnect())
+                                # Даём время на завершение задач
+                                loop.run_until_complete(asyncio.sleep(0.5))
                         except:
                             pass
                         continue
@@ -183,6 +185,8 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
                         try:
                             if client.is_connected():
                                 loop.run_until_complete(client.disconnect())
+                                # Даём время на завершение задач
+                                loop.run_until_complete(asyncio.sleep(0.5))
                         except:
                             pass
                         return None
@@ -208,6 +212,8 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
                         # Отключаемся и возвращаем None
                         try:
                             loop.run_until_complete(client.disconnect())
+                            # Даём время на завершение задач
+                            loop.run_until_complete(asyncio.sleep(0.5))
                         except Exception:
                             pass  # Игнорируем ошибки отключения
                         logger.error("❌ Требуется переавторизация. Удалите файл %s и создайте новую сессию", session_file)
@@ -263,9 +269,17 @@ def ensure_session() -> None:
     finally:
         if client:
             try:
-                # Просто отключаем клиент - Telethon сам управляет завершением задач
+                # Отключаем клиент и даём время на завершение фоновых задач
+                loop = client.loop
                 if client.is_connected():
-                    client.loop.run_until_complete(client.disconnect())
+                    loop.run_until_complete(client.disconnect())
+                    # Даём небольшое время на завершение фоновых задач Telethon
+                    import asyncio
+                    try:
+                        # Ждём немного, чтобы фоновые задачи успели завершиться
+                        loop.run_until_complete(asyncio.sleep(0.5))
+                    except Exception:
+                        pass
             except Exception:
                 pass
 
@@ -391,9 +405,17 @@ def fetch_posts(limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
     finally:
         try:
             if client:
-                # Просто отключаем клиент - Telethon сам управляет завершением задач
+                # Отключаем клиент и даём время на завершение фоновых задач
+                loop = client.loop
                 if client.is_connected():
-                    client.loop.run_until_complete(client.disconnect())
+                    loop.run_until_complete(client.disconnect())
+                    # Даём небольшое время на завершение фоновых задач Telethon
+                    import asyncio
+                    try:
+                        # Ждём немного, чтобы фоновые задачи успели завершиться
+                        loop.run_until_complete(asyncio.sleep(0.5))
+                    except Exception:
+                        pass
         except Exception:
             pass
 
