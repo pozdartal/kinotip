@@ -1,6 +1,6 @@
 """
 Простой Flask-парсер для канала Telegram шоу "Титр".
-Запуск: python app.py
+Запуск:  python app.py
 """
 
 import logging
@@ -70,9 +70,17 @@ app = Flask(__name__)
 # Небольшой кэш, который наполняем при старте
 cached_posts: List[Dict[str, Any]] = []
 
+# Блокировка для синхронизации доступа к сессии Telethon
+_session_lock = threading.Lock()
 
-def create_client() -> Optional[TelegramClient]:
-    """Создаёт и авторизует Telethon-клиент. Возвращает None при ошибке авторизации."""
+
+def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[TelegramClient]:
+    """Создаёт и авторизует Telethon-клиент. Возвращает None при ошибке авторизации.
+    
+    Args:
+        max_retries: Максимальное количество попыток при ошибке "database is locked"
+        retry_delay: Задержка между попытками в секундах
+    """
     import os
     import asyncio
     session_name = "kinotip_parser"
@@ -81,63 +89,97 @@ def create_client() -> Optional[TelegramClient]:
     # ПРОВЕРЯЕМ: есть ли файл сессии?
     has_session = os.path.exists(session_file)
     
-    # Создаём event loop для текущего потока
-    # В новом потоке может не быть event loop, поэтому создаём новый
-    # В Python 3.10+ get_event_loop() устарел, используем get_running_loop() или new_event_loop()
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        # Нет запущенного loop, создаём новый
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    # Создаём клиент с явным указанием loop
-    client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE, loop=loop)
-    
-    try:
-        # Подключаемся
-        loop.run_until_complete(client.connect())
-        
-        # Если файл сессии ЕСТЬ - проверяем авторизацию
-        if has_session:
-            logger.info("Файл сессии найден: %s", session_file)
-            is_authorized = loop.run_until_complete(client.is_user_authorized())
-            if is_authorized:
-                logger.info("✅ Сессия авторизована")
-                return client
-            else:
-                logger.warning("⚠️ Файл сессии есть, но авторизация не прошла!")
-                logger.warning("Возможно, сессия истекла или повреждена.")
-                # Отключаемся и возвращаем None
-                try:
-                    loop.run_until_complete(client.disconnect())
-                except Exception:
-                    pass  # Игнорируем ошибки отключения
-                logger.error("❌ Требуется переавторизация. Удалите файл %s и создайте новую сессию", session_file)
-                return None
-        
-        # Если файла НЕТ - пытаемся авторизоваться
-        logger.info("Файл сессии НЕ найден, требуется авторизация")
+    # Используем блокировку для синхронизации доступа к сессии
+    with _session_lock:
+        # Создаём event loop для текущего потока
+        # В новом потоке может не быть event loop, поэтому создаём новый
+        # В Python 3.10+ get_event_loop() устарел, используем get_running_loop() или new_event_loop()
         try:
-            client.start(phone=PHONE_VALUE)
-            logger.info("✅ Авторизация успешна, файл сессии создан")
-            return client
-        except EOFError:
-            logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
-            logger.error("Запустите 'python app.py' локально один раз для создания файла сессии")
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # Нет запущенного loop, создаём новый
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        # Создаём клиент с явным указанием loop
+        client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE, loop=loop)
+        
+        # Повторяем попытки при ошибке "database is locked"
+        for attempt in range(max_retries):
             try:
-                loop.run_until_complete(client.disconnect())
-            except:
-                pass
-            return None
-    except Exception as e:
-        logger.error("Ошибка при создании клиента: %s", e)
-        try:
-            if client:
-                loop.run_until_complete(client.disconnect())
-        except:
-            pass
-        return None
+                # Подключаемся
+                loop.run_until_complete(client.connect())
+                break  # Успешно подключились, выходим из цикла
+            except Exception as e:
+                error_str = str(e).lower()
+                if "database is locked" in error_str or "locked" in error_str:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)  # Экспоненциальная задержка
+                        logger.warning(
+                            "Файл сессии заблокирован (попытка %d/%d). Ждём %.1f сек...",
+                            attempt + 1, max_retries, wait_time
+                        )
+                        time.sleep(wait_time)
+                        # Закрываем неудачное подключение
+                        try:
+                            if client.is_connected():
+                                loop.run_until_complete(client.disconnect())
+                        except:
+                            pass
+                        continue
+                    else:
+                        logger.error("Файл сессии заблокирован после %d попыток. Возможно, другой процесс использует сессию.", max_retries)
+                        try:
+                            if client.is_connected():
+                                loop.run_until_complete(client.disconnect())
+                        except:
+                            pass
+                        return None
+                else:
+                    # Другая ошибка, пробрасываем дальше
+                    raise
+        
+            try:
+                # Если файл сессии ЕСТЬ - проверяем авторизацию
+                if has_session:
+                    logger.info("Файл сессии найден: %s", session_file)
+                    is_authorized = loop.run_until_complete(client.is_user_authorized())
+                    if is_authorized:
+                        logger.info("✅ Сессия авторизована")
+                        return client
+                    else:
+                        logger.warning("⚠️ Файл сессии есть, но авторизация не прошла!")
+                        logger.warning("Возможно, сессия истекла или повреждена.")
+                        # Отключаемся и возвращаем None
+                        try:
+                            loop.run_until_complete(client.disconnect())
+                        except Exception:
+                            pass  # Игнорируем ошибки отключения
+                        logger.error("❌ Требуется переавторизация. Удалите файл %s и создайте новую сессию", session_file)
+                        return None
+                
+                # Если файла НЕТ - пытаемся авторизоваться
+                logger.info("Файл сессии НЕ найден, требуется авторизация")
+                try:
+                    client.start(phone=PHONE_VALUE)
+                    logger.info("✅ Авторизация успешна, файл сессии создан")
+                    return client
+                except EOFError:
+                    logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
+                    logger.error("Запустите 'python app.py' локально один раз для создания файла сессии")
+                    try:
+                        loop.run_until_complete(client.disconnect())
+                    except:
+                        pass
+                    return None
+            except Exception as e:
+                logger.error("Ошибка при создании клиента: %s", e)
+                try:
+                    if client and client.is_connected():
+                        loop.run_until_complete(client.disconnect())
+                except:
+                    pass
+                return None
 
 
 def ensure_session() -> None:
