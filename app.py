@@ -130,7 +130,12 @@ def create_client() -> Optional[TelegramClient]:
                 pass
             return None
     except Exception as e:
-        logger.error("Ошибка при создании клиента: %s", e)
+        error_str = str(e).lower()
+        # Игнорируем ошибки "database is locked" - это нормально при параллельном доступе
+        if "database is locked" in error_str or "locked" in error_str:
+            logger.warning("Файл сессии временно заблокирован другим процессом. Пропускаем обновление.")
+        else:
+            logger.error("Ошибка при создании клиента: %s", e)
         try:
             if client and client.is_connected():
                 loop.run_until_complete(client.disconnect())
@@ -304,13 +309,30 @@ def refresh_cache(reason: str) -> None:
     global cached_posts
 
     logger.info("Обновляем кэш (%s)", reason)
-    new_posts = fetch_posts(limit=None)
+    
+    # Делаем до 3 попыток получить посты
+    new_posts = None
+    for attempt in range(3):
+        new_posts = fetch_posts(limit=None)
+        if new_posts is not None:
+            break
+        if attempt < 2:
+            wait_time = (attempt + 1) * 2  # 2, 4 секунды
+            logger.warning("Попытка %d/3 не удалась. Ждём %d сек перед повторной попыткой...", attempt + 1, wait_time)
+            time.sleep(wait_time)
+    
     if new_posts is None:
-        logger.warning(
-            "Не удалось обновить кэш (%s). Сохраняем предыдущие данные (%d постов)",
-            reason,
-            len(cached_posts),
-        )
+        if len(cached_posts) > 0:
+            logger.warning(
+                "Не удалось обновить кэш (%s) после 3 попыток. Сохраняем предыдущие данные (%d постов)",
+                reason,
+                len(cached_posts),
+            )
+        else:
+            logger.error(
+                "Не удалось обновить кэш (%s) после 3 попыток. Кэш пуст! Проверьте сессию и доступность канала.",
+                reason,
+            )
         return
 
     cached_posts = new_posts
