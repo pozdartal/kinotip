@@ -263,7 +263,9 @@ def ensure_session() -> None:
     finally:
         if client:
             try:
-                client.loop.run_until_complete(client.disconnect())
+                # Просто отключаем клиент - Telethon сам управляет завершением задач
+                if client.is_connected():
+                    client.loop.run_until_complete(client.disconnect())
             except Exception:
                 pass
 
@@ -389,7 +391,9 @@ def fetch_posts(limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
     finally:
         try:
             if client:
-                client.loop.run_until_complete(client.disconnect())
+                # Просто отключаем клиент - Telethon сам управляет завершением задач
+                if client.is_connected():
+                    client.loop.run_until_complete(client.disconnect())
         except Exception:
             pass
 
