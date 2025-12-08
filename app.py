@@ -70,64 +70,8 @@ app = Flask(__name__)
 # Небольшой кэш, который наполняем при старте
 cached_posts: List[Dict[str, Any]] = []
 
-# Блокировка для синхронизации доступа к сессии Telethon между процессами
-import sys
-
-# Файловая блокировка для работы между процессами
-_lock_file_path = "kinotip_parser.session.lock"
-
-def _acquire_session_lock():
-    """Приобретает файловую блокировку для доступа к сессии."""
-    try:
-        if sys.platform != 'win32':
-            import fcntl
-            lock_file = open(_lock_file_path, 'w')
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            return lock_file
-        else:
-            # На Windows используем простую проверку файла с таймаутом
-            import time
-            max_wait = 10  # Максимальное время ожидания в секундах
-            start_time = time.time()
-            while time.time() - start_time < max_wait:
-                try:
-                    # Пытаемся создать файл блокировки
-                    lock_file = open(_lock_file_path, 'x')
-                    return lock_file
-                except FileExistsError:
-                    # Файл существует, ждём немного
-                    time.sleep(0.5)
-                    continue
-            # Если не удалось получить блокировку, возвращаем None
-            return None
-    except Exception as e:
-        logger.debug("Ошибка при получении блокировки: %s", e)
-        return None
-
-def _release_session_lock(lock_file):
-    """Освобождает файловую блокировку."""
-    if lock_file is None:
-        return
-    try:
-        lock_file.close()
-        if sys.platform == 'win32':
-            # На Windows удаляем файл блокировки
-            import os
-            try:
-                os.remove(_lock_file_path)
-            except:
-                pass
-    except Exception:
-        pass
-
-
-def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[TelegramClient]:
-    """Создаёт и авторизует Telethon-клиент. Возвращает None при ошибке авторизации.
-    
-    Args:
-        max_retries: Максимальное количество попыток при ошибке "database is locked"
-        retry_delay: Задержка между попытками в секундах
-    """
+def create_client() -> Optional[TelegramClient]:
+    """Создаёт и авторизует Telethon-клиент. Возвращает None при ошибке авторизации."""
     import os
     import asyncio
     session_name = "kinotip_parser"
@@ -136,119 +80,63 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
     # ПРОВЕРЯЕМ: есть ли файл сессии?
     has_session = os.path.exists(session_file)
     
-    # Используем файловую блокировку для синхронизации доступа к сессии между процессами
-    lock_file = None
+    # Создаём event loop для текущего потока
+    # В новом потоке может не быть event loop, поэтому создаём новый
+    # В Python 3.10+ get_event_loop() устарел, используем get_running_loop() или new_event_loop()
     try:
-        lock_file = _acquire_session_lock()
-        if lock_file is None:
-            logger.warning("Не удалось получить блокировку сессии, продолжаем без блокировки")
-        # Создаём event loop для текущего потока
-        # В новом потоке может не быть event loop, поэтому создаём новый
-        # В Python 3.10+ get_event_loop() устарел, используем get_running_loop() или new_event_loop()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # Нет запущенного loop, создаём новый
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # Нет запущенного loop, создаём новый
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    
+    # Создаём клиент с явным указанием loop
+    client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE, loop=loop)
+    
+    try:
+        # Подключаемся
+        loop.run_until_complete(client.connect())
         
-        # Создаём клиент с явным указанием loop
-        client = TelegramClient(session_name, API_ID_INT, API_HASH_VALUE, loop=loop)
-        
-        # Повторяем попытки при ошибке "database is locked"
-        for attempt in range(max_retries):
-            try:
-                # Подключаемся
-                loop.run_until_complete(client.connect())
-                break  # Успешно подключились, выходим из цикла
-            except Exception as e:
-                error_str = str(e).lower()
-                if "database is locked" in error_str or "locked" in error_str:
-                    if attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)  # Экспоненциальная задержка
-                        logger.warning(
-                            "Файл сессии заблокирован (попытка %d/%d). Ждём %.1f сек...",
-                            attempt + 1, max_retries, wait_time
-                        )
-                        time.sleep(wait_time)
-                        # Закрываем неудачное подключение
-                        try:
-                            if client.is_connected():
-                                loop.run_until_complete(client.disconnect())
-                                # Даём время на завершение задач
-                                loop.run_until_complete(asyncio.sleep(0.5))
-                        except:
-                            pass
-                        continue
-                    else:
-                        logger.error("Файл сессии заблокирован после %d попыток. Возможно, другой процесс использует сессию.", max_retries)
-                        try:
-                            if client.is_connected():
-                                loop.run_until_complete(client.disconnect())
-                                # Даём время на завершение задач
-                                loop.run_until_complete(asyncio.sleep(0.5))
-                        except:
-                            pass
-                        return None
-                else:
-                    # Другая ошибка, пробрасываем дальше
-                    raise
-        
-            try:
-                # Если файл сессии ЕСТЬ - проверяем авторизацию
-                if has_session:
-                    logger.info("Файл сессии найден: %s", session_file)
-                    is_authorized = loop.run_until_complete(client.is_user_authorized())
-                    if is_authorized:
-                        logger.info("✅ Сессия авторизована")
-                        # Освобождаем блокировку после успешного подключения
-                        if lock_file:
-                            _release_session_lock(lock_file)
-                            lock_file = None
-                        return client
-                    else:
-                        logger.warning("⚠️ Файл сессии есть, но авторизация не прошла!")
-                        logger.warning("Возможно, сессия истекла или повреждена.")
-                        # Отключаемся и возвращаем None
-                        try:
-                            loop.run_until_complete(client.disconnect())
-                            # Даём время на завершение задач
-                            loop.run_until_complete(asyncio.sleep(0.5))
-                        except Exception:
-                            pass  # Игнорируем ошибки отключения
-                        logger.error("❌ Требуется переавторизация. Удалите файл %s и создайте новую сессию", session_file)
-                        return None
-                
-                # Если файла НЕТ - пытаемся авторизоваться
-                logger.info("Файл сессии НЕ найден, требуется авторизация")
+        # Если файл сессии ЕСТЬ - проверяем авторизацию
+        if has_session:
+            logger.info("Файл сессии найден: %s", session_file)
+            is_authorized = loop.run_until_complete(client.is_user_authorized())
+            if is_authorized:
+                logger.info("✅ Сессия авторизована")
+                return client
+            else:
+                logger.warning("⚠️ Файл сессии есть, но авторизация не прошла!")
+                logger.warning("Возможно, сессия истекла или повреждена.")
+                # Отключаемся и возвращаем None
                 try:
-                    client.start(phone=PHONE_VALUE)
-                    logger.info("✅ Авторизация успешна, файл сессии создан")
-                    # Освобождаем блокировку после успешной авторизации
-                    if lock_file:
-                        _release_session_lock(lock_file)
-                        lock_file = None
-                    return client
-                except EOFError:
-                    logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
-                    logger.error("Запустите 'python app.py' локально один раз для создания файла сессии")
-                    try:
-                        loop.run_until_complete(client.disconnect())
-                    except:
-                        pass
-                    return None
-            except Exception as e:
-                logger.error("Ошибка при создании клиента: %s", e)
-                try:
-                    if client and client.is_connected():
-                        loop.run_until_complete(client.disconnect())
-                except:
-                    pass
+                    loop.run_until_complete(client.disconnect())
+                except Exception:
+                    pass  # Игнорируем ошибки отключения
+                logger.error("❌ Требуется переавторизация. Удалите файл %s и создайте новую сессию", session_file)
                 return None
-    finally:
-        # Освобождаем блокировку в любом случае
-        if lock_file:
-            _release_session_lock(lock_file)
+        
+        # Если файла НЕТ - пытаемся авторизоваться
+        logger.info("Файл сессии НЕ найден, требуется авторизация")
+        try:
+            client.start(phone=PHONE_VALUE)
+            logger.info("✅ Авторизация успешна, файл сессии создан")
+            return client
+        except EOFError:
+            logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
+            logger.error("Запустите 'python app.py' локально один раз для создания файла сессии")
+            try:
+                loop.run_until_complete(client.disconnect())
+            except:
+                pass
+            return None
+    except Exception as e:
+        logger.error("Ошибка при создании клиента: %s", e)
+        try:
+            if client and client.is_connected():
+                loop.run_until_complete(client.disconnect())
+        except:
+            pass
+        return None
 
 
 def ensure_session() -> None:
@@ -269,17 +157,9 @@ def ensure_session() -> None:
     finally:
         if client:
             try:
-                # Отключаем клиент и даём время на завершение фоновых задач
-                loop = client.loop
+                # Просто отключаем клиент
                 if client.is_connected():
-                    loop.run_until_complete(client.disconnect())
-                    # Даём небольшое время на завершение фоновых задач Telethon
-                    import asyncio
-                    try:
-                        # Ждём немного, чтобы фоновые задачи успели завершиться
-                        loop.run_until_complete(asyncio.sleep(0.5))
-                    except Exception:
-                        pass
+                    client.loop.run_until_complete(client.disconnect())
             except Exception:
                 pass
 
@@ -405,17 +285,9 @@ def fetch_posts(limit: Optional[int] = None) -> Optional[List[Dict[str, Any]]]:
     finally:
         try:
             if client:
-                # Отключаем клиент и даём время на завершение фоновых задач
-                loop = client.loop
+                # Просто отключаем клиент
                 if client.is_connected():
-                    loop.run_until_complete(client.disconnect())
-                    # Даём небольшое время на завершение фоновых задач Telethon
-                    import asyncio
-                    try:
-                        # Ждём немного, чтобы фоновые задачи успели завершиться
-                        loop.run_until_complete(asyncio.sleep(0.5))
-                    except Exception:
-                        pass
+                    client.loop.run_until_complete(client.disconnect())
         except Exception:
             pass
 
