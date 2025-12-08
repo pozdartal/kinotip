@@ -70,8 +70,55 @@ app = Flask(__name__)
 # Небольшой кэш, который наполняем при старте
 cached_posts: List[Dict[str, Any]] = []
 
-# Блокировка для синхронизации доступа к сессии Telethon
-_session_lock = threading.Lock()
+# Блокировка для синхронизации доступа к сессии Telethon между процессами
+import sys
+
+# Файловая блокировка для работы между процессами
+_lock_file_path = "kinotip_parser.session.lock"
+
+def _acquire_session_lock():
+    """Приобретает файловую блокировку для доступа к сессии."""
+    try:
+        if sys.platform != 'win32':
+            import fcntl
+            lock_file = open(_lock_file_path, 'w')
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            return lock_file
+        else:
+            # На Windows используем простую проверку файла с таймаутом
+            import time
+            max_wait = 10  # Максимальное время ожидания в секундах
+            start_time = time.time()
+            while time.time() - start_time < max_wait:
+                try:
+                    # Пытаемся создать файл блокировки
+                    lock_file = open(_lock_file_path, 'x')
+                    return lock_file
+                except FileExistsError:
+                    # Файл существует, ждём немного
+                    time.sleep(0.5)
+                    continue
+            # Если не удалось получить блокировку, возвращаем None
+            return None
+    except Exception as e:
+        logger.debug("Ошибка при получении блокировки: %s", e)
+        return None
+
+def _release_session_lock(lock_file):
+    """Освобождает файловую блокировку."""
+    if lock_file is None:
+        return
+    try:
+        lock_file.close()
+        if sys.platform == 'win32':
+            # На Windows удаляем файл блокировки
+            import os
+            try:
+                os.remove(_lock_file_path)
+            except:
+                pass
+    except Exception:
+        pass
 
 
 def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[TelegramClient]:
@@ -89,8 +136,12 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
     # ПРОВЕРЯЕМ: есть ли файл сессии?
     has_session = os.path.exists(session_file)
     
-    # Используем блокировку для синхронизации доступа к сессии
-    with _session_lock:
+    # Используем файловую блокировку для синхронизации доступа к сессии между процессами
+    lock_file = None
+    try:
+        lock_file = _acquire_session_lock()
+        if lock_file is None:
+            logger.warning("Не удалось получить блокировку сессии, продолжаем без блокировки")
         # Создаём event loop для текущего потока
         # В новом потоке может не быть event loop, поэтому создаём новый
         # В Python 3.10+ get_event_loop() устарел, используем get_running_loop() или new_event_loop()
@@ -146,6 +197,10 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
                     is_authorized = loop.run_until_complete(client.is_user_authorized())
                     if is_authorized:
                         logger.info("✅ Сессия авторизована")
+                        # Освобождаем блокировку после успешного подключения
+                        if lock_file:
+                            _release_session_lock(lock_file)
+                            lock_file = None
                         return client
                     else:
                         logger.warning("⚠️ Файл сессии есть, но авторизация не прошла!")
@@ -163,6 +218,10 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
                 try:
                     client.start(phone=PHONE_VALUE)
                     logger.info("✅ Авторизация успешна, файл сессии создан")
+                    # Освобождаем блокировку после успешной авторизации
+                    if lock_file:
+                        _release_session_lock(lock_file)
+                        lock_file = None
                     return client
                 except EOFError:
                     logger.error("❌ Нет интерактивного ввода и нет файла сессии!")
@@ -180,6 +239,10 @@ def create_client(max_retries: int = 3, retry_delay: float = 1.0) -> Optional[Te
                 except:
                     pass
                 return None
+    finally:
+        # Освобождаем блокировку в любом случае
+        if lock_file:
+            _release_session_lock(lock_file)
 
 
 def ensure_session() -> None:
