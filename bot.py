@@ -284,6 +284,16 @@ def start_feed_process_if_needed() -> None:
         logger.info("POSTS_FEED_URL путь не /feed: %s, парсер не запускается", path)
         return
 
+    # Проверяем, не запущен ли уже парсер (доступен ли /feed)
+    try:
+        response = requests.get(POSTS_FEED_URL, timeout=2)
+        if response.status_code == 200:
+            logger.info("Парсер уже доступен на %s, не запускаем новый процесс", POSTS_FEED_URL)
+            return
+    except requests.RequestException:
+        # Парсер не доступен, продолжаем запуск
+        pass
+
     try:
         from app import run_feed_server
         logger.info("Импорт парсера успешен")
